@@ -6,6 +6,7 @@ import requests
 import time
 import random
 import threading
+import collections
 
 class Client:
     def __init__(self):
@@ -15,31 +16,51 @@ class Client:
         self.delay = datetime.timedelta(seconds=1)
         self.offset = datetime.timedelta()
         self._correction = datetime.timedelta()
-        self.stop = False
         threading.Thread(target=self._delayer, daemon=True).start()
         threading.Thread(target=self._poster, daemon=True).start()
         
     def send(self, message):
         timecode = datetime.datetime.utcnow()
-        self._queue.put((timecode, message))
+        self._queue.put([timecode, message, 0])
+        
+    def delete(self, spaces):
+        timecode = datetime.datetime.utcnow()
+        self._queue.put([timecode, '', spaces])
         
     def _delayer(self):
+        items = collections.deque()
         while True:
-            if self.stop: return
-            item = self._queue.get()
-            diff = datetime.datetime.utcnow() - item[0]
+            if len(items) == 0:
+                items.append(self._queue.get())
+            if len(items[0][1]) == 0:
+                items.popleft()
+                continue
+            diff = datetime.datetime.utcnow() - items[0][0]
             while diff < self.delay:
                 delay = self.delay - diff
                 time.sleep(delay.total_seconds())
-                diff = datetime.datetime.utcnow() - item[0]
-            self._delayed.put(item)
+                diff = datetime.datetime.utcnow() - items[0][0]
+            try:
+                while True:
+                    items.append(self._queue.get_nowait())
+            except queue.Empty:
+                pass
+            delete = 0
+            for item in reversed(items):
+                delete += item[2]
+                count = min(delete, len(item[1]))
+                if count > 0:
+                    print("deleting: ", item[1], item[1][:-count])
+                    item[1] = item[1][:-count]
+                    delete -= count
+            if len(items[0][1]) > 0 and datetime.datetime.utcnow() - items[0][0] >= self.delay:
+                self._delayed.put(items.popleft())
 
     def _poster(self):
         headers = {'content-type': 'text/plain'}
         seq = 1
         correction = datetime.timedelta()
         while True:
-            if self.stop: return
             item = self._delayed.get()
             items = [item]
             try:
@@ -69,7 +90,8 @@ class Client:
             seq += 1
 
 c = Client()
-c.url = "http://upload.youtube.com/closedcaption?itag=33&key=yt_qc&expire=1440296665&sparams=id%2Citag%2Cns%2Cexpire&signature=3CE301723686C033E58012110F9FE88BBF7CA679.BCD9169B4E6FD08795155F4827E01013FA13A9CC&ns=yt-ems-t&id=e3g9lbxmZ2SgGzG4KsjvDA1437704530287373"
+c.url = 'http://localhost:8080/?foo'
+#c.url = "http://upload.youtube.com/closedcaption?itag=33&key=yt_qc&expire=1440296665&sparams=id%2Citag%2Cns%2Cexpire&signature=3CE301723686C033E58012110F9FE88BBF7CA679.BCD9169B4E6FD08795155F4827E01013FA13A9CC&ns=yt-ems-t&id=e3g9lbxmZ2SgGzG4KsjvDA1437704530287373"
 s = """Lorem ipsum dolor sit amet, cum fastidii perfecto legendos et, eu vocent efficiantur est, in reque appareat lucilius quo. Cu nibh illum pri. Id vim vero consequat consetetur. Quod suscipit intellegam nam ex, mel modo mazim animal ex. Ad vim timeam quaestio, quo paulo quaeque equidem ei. Vel ne zril adolescens voluptatum, numquam atomorum his ei. Ferri volutpat sea id, ad fuisset adipiscing vix.
 
 Sea porro intellegam ad, sint animal te mea, eum meis graeco apeirian ei. Choro veniam te usu. Eu fabulas torquatos usu. Dolorum sapientem eu eum, sed timeam suscipit no, detraxit pericula mei at. Cu soluta graeco usu. Id sit viderer appellantur, eos nemore timeam id.
@@ -83,3 +105,5 @@ words = s.split()
 for word in words:
     time.sleep(0.5)
     c.send(word + " ")
+    time.sleep(0.1)
+    c.delete(random.randint(0, 3))
