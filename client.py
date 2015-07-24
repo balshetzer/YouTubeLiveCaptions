@@ -15,6 +15,7 @@ class Client:
         self.url = ''
         self.delay = datetime.timedelta(seconds=1)
         self.offset = datetime.timedelta()
+        self.callback = None
         self._correction = datetime.timedelta()
         threading.Thread(target=self._delayer, daemon=True).start()
         threading.Thread(target=self._poster, daemon=True).start()
@@ -75,21 +76,30 @@ class Client:
             backoff = 0.1
             start = time.time()
             timeout = 5  # seconds
+            success = False
             while time.time() < start + timeout:
                 try:
                     r = requests.post(self.url + "&seq={seq}".format(**locals()), data=data, headers=headers, timeout=1)
                     r.raise_for_status()
                     correction = datetime.datetime.strptime(r.text.strip(), "%Y-%m-%dT%H:%M:%S.%f") - datetime.datetime.utcnow()
+                    success = True
                     break
                 except requests.exceptions.RequestException as e:
                     time.sleep(random.uniform(0, backoff))
                     backoff *= 2
                     continue
-            # TODO: Send successes and failures out via a Queue to show in green and red.
+            if self.callback:
+                self.callback(success, ''.join([item[1] for item in items]))
             seq += 1
 
 c = Client()
 c.url = 'http://localhost:8080/?foo'
+def callback(success, message):
+    if success:
+        print("success:", message)
+    else:
+        print("failed:", message)
+c.callback = callback
 #c.url = "http://upload.youtube.com/closedcaption?itag=33&key=yt_qc&expire=1440296665&sparams=id%2Citag%2Cns%2Cexpire&signature=3CE301723686C033E58012110F9FE88BBF7CA679.BCD9169B4E6FD08795155F4827E01013FA13A9CC&ns=yt-ems-t&id=e3g9lbxmZ2SgGzG4KsjvDA1437704530287373"
 s = """Lorem ipsum dolor sit amet, cum fastidii perfecto legendos et, eu vocent efficiantur est, in reque appareat lucilius quo. Cu nibh illum pri. Id vim vero consequat consetetur. Quod suscipit intellegam nam ex, mel modo mazim animal ex. Ad vim timeam quaestio, quo paulo quaeque equidem ei. Vel ne zril adolescens voluptatum, numquam atomorum his ei. Ferri volutpat sea id, ad fuisset adipiscing vix.
 
