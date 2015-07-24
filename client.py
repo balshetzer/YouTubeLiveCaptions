@@ -50,7 +50,6 @@ class Client:
                 delete += item[2]
                 count = min(delete, len(item[1]))
                 if count > 0:
-                    print("deleting: ", item[1], item[1][:-count])
                     item[1] = item[1][:-count]
                     delete -= count
             if len(items[0][1]) > 0 and datetime.datetime.utcnow() - items[0][0] >= self.delay:
