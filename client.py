@@ -2,6 +2,7 @@ import collections
 import datetime
 import http.client
 import io
+import itertools
 import queue
 import random
 import requests
@@ -10,93 +11,117 @@ import time
 import wx
 import wx.lib.scrolledpanel
 
+class TextEntry:
+    PENDING = 0
+    SENT = 1
+    SUCCESS = 2
+    FAILED = 3
+    
+    def __init__(self, text=''):
+        self.time = datetime.datetime.utcnow()
+        self.text = text
+        self.status = TextEntry.PENDING
+
 class Client:
     def __init__(self):
-        self._queue = queue.Queue()
-        self._delayed = queue.Queue()
+        # constants
+        self._heartbeat_interval = datetime.timedelta(seconds=5)
+        self._retry_timeout = datetime.timedelta(seconds=5)
+        self._poll_interval = 1
+        self._post_timeout = 0.2
+        
+        # state
+        self._confirmed = collections.deque()
+        self._sent = collections.deque()
+        self._pending = collections.deque()
+        self._seq = 0
+        self._retry_start = datetime.datetime.utcnow()
+        self._retry_delay = 0
+        self._last_post = datetime.datetime.utcnow() - self._heartbeat_interval
+        self._correction = datetime.timedelta()
+
+        # settings
+        self.post_callback = lambda x: None
         self.url = ''
         self.delay = datetime.timedelta(seconds=5)
         self.offset = datetime.timedelta()
-        self.callback = None
-        self.heartbeat_interval_seconds = 5
-        self._correction = datetime.timedelta()
-        threading.Thread(target=self._delayer, daemon=True).start()
-        threading.Thread(target=self._poster, daemon=True).start()
         
-    def send(self, message):
-        timecode = datetime.datetime.utcnow()
-        self._queue.put([timecode, message, 0])
+    def text(self, text):
+        "Queue text to be sent."
+        self._pending.append(TextEntry(text=text))
         
     def delete(self, spaces):
-        timecode = datetime.datetime.utcnow()
-        self._queue.put([timecode, '', spaces])
-        
-    def _delayer(self):
-        items = collections.deque()
-        while True:
-            if len(items) == 0:
-                items.append(self._queue.get())
-            if len(items[0][1]) == 0:
-                items.popleft()
-                continue
-            diff = datetime.datetime.utcnow() - items[0][0]
-            while diff < self.delay:
-                delay = self.delay - diff
-                time.sleep(delay.total_seconds())
-                diff = datetime.datetime.utcnow() - items[0][0]
-            try:
-                while True:
-                    items.append(self._queue.get_nowait())
-            except queue.Empty:
-                pass
-            delete = 0
-            for item in reversed(items):
-                delete += item[2]
-                count = min(delete, len(item[1]))
-                if count > 0:
-                    item[1] = item[1][:-count]
-                    delete -= count
-            if len(items[0][1]) > 0 and datetime.datetime.utcnow() - items[0][0] >= self.delay:
-                self._delayed.put(items.popleft())
+        "Delete text if it hasn't already been sent."
+        while spaces and self._pending:
+            item = self._pending[-1]
+            count = min(spaces, len(item.text))
+            if count > 0:
+                item.text = item.text[:-count]
+                spaces -= count
+            if not item.text:
+                self._pending.pop()
 
-    def _poster(self):
+    def entries(self):
+        return itertools.chain(self._confirmed, self._sent, self._pending)
+
+    def _retry(self):
+        if self._post(self._seq, self._sent):
+            for item in self._sent:
+                item.status = TextEntry.SUCCESS
+            self._confirmed.extend(self._sent)
+            self._sent.clear()
+            return 0 if self._pending else self._poll_interval
+        else:
+            if now - self._retry_start >= self._retry_timeout:
+                for item in self._sent:
+                    item.status = TextEntry.FAILED
+                self._confirmed.extend(self._sent)
+                self._sent.clear()
+                return 0 if self._pending else self._poll_interval
+            self._retry_delay *= 2
+            return random.unifrom(0, self._retry_delay)
+
+    def tick(self):
+        """Runs background activities. Returns the delay, in seconds, until the next call to tick."""
+        now = datetime.datetime.utcnow()
+        if self._sent:
+            return self._retry()
+        
+        self._seq += 1
+        self._retry_start = datetime.datetime.utcnow()
+        self._retry_delay = 0.1
+        
+        while self._pending and now - self._pending[0].time >= self.delay:
+            item = self._pending.popleft()
+            if item.text:
+                self._sent.append(item)
+        if self._sent:
+            return self._retry()
+        if now - self._last_post >= self._heartbeat_interval:
+            self._post(self._seq, [TextEntry()])
+        return self._poll_interval
+
+    def _post(self, seq, items):
         headers = {'content-type': 'text/plain'}
-        seq = 1
-        correction = datetime.timedelta()
-        while True:
-            try:
-                item = self._delayed.get(timeout=self.heartbeat_interval_seconds)
-            except queue.Empty:
-                item = [datetime.datetime.utcnow(), '', 0]
-            items = [item]
-            try:
-                for i in range(100):
-                    items.append(self._delayed.get_nowait())
-            except queue.Empty:
-                pass
-            buf = io.StringIO(newline="\r\n")
-            offset = self.offset
-            for item in items:
-                print((item[0] + offset + correction).isoformat()[:-3], item[1].replace("\n", "<br>"), sep="\n", end="\n", file=buf, flush=True)
-            data = buf.getvalue()
-            backoff = 0.1
-            start = time.time()
-            timeout = 5  # seconds
+        buf = io.StringIO(newline="\n")
+        offset = self.offset
+        for item in items:
+            print((item.time + offset + self._correction).isoformat()[:-3], item.text.replace("\n", "<br>"), sep="\n", end="\n", file=buf, flush=True)
+        data = buf.getvalue()
+        try:
+            r = requests.post(self.url + "&seq={seq}".format(seq=seq), data=data, headers=headers, timeout=self._post_timeout)
+            r.raise_for_status()
+            self._correction = datetime.datetime.strptime(r.text.strip(), "%Y-%m-%dT%H:%M:%S.%f") - datetime.datetime.utcnow()
+            success = True
+        except requests.exceptions.RequestException:
             success = False
-            while time.time() < start + timeout:
-                try:
-                    r = requests.post(self.url + "&seq={seq}".format(**locals()), data=data, headers=headers, timeout=1)
-                    r.raise_for_status()
-                    correction = datetime.datetime.strptime(r.text.strip(), "%Y-%m-%dT%H:%M:%S.%f") - datetime.datetime.utcnow()
-                    success = True
-                    break
-                except requests.exceptions.RequestException as e:
-                    time.sleep(random.uniform(0, backoff))
-                    backoff *= 2
-                    continue
-            if self.callback:
-                self.callback(success, ''.join([item[1] for item in items]))
-            seq += 1
+        self._last_post = datetime.datetime.utcnow()
+        self.post_callback(success)
+        return success
+
+
+def format_sent_text(items):
+    return ''.join(['<span color="{color}>{text}</span>'.format({color: 'green' if item[0] else 'red', text: item[1].replace("&", "&amp;").replace("'", "&apos;").replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')}) for item in items])
 
 class MyFrame(wx.Frame):
     def __init__(self, parent=None):
@@ -114,18 +139,19 @@ class MyFrame(wx.Frame):
         url = wx.TextCtrl(self)
         hbox.Add(url, border=3, flag=wx.ALL)
         url.Bind(wx.EVT_TEXT, self.OnURLChange)
+        url.SetValue(self.client.url)
         
         hbox.Add(wx.StaticText(self, label="Delay: "), flag = wx.ALL, border=3)
         delay = wx.TextCtrl(self)
         hbox.Add(delay, border=3, flag=wx.ALL)
         delay.Bind(wx.EVT_TEXT, self.OnDelayChange)
-        delay.SetValue('5')
+        delay.SetValue(str(self.client.delay.total_seconds()))
 
         hbox.Add(wx.StaticText(self, label="Offset: "), flag = wx.ALL, border=3)
         offset = wx.TextCtrl(self)
         hbox.Add(offset, border=3, flag=wx.ALL)
         delay.Bind(wx.EVT_TEXT, self.OnOffsetChange)
-        offset.SetValue('0')
+        offset.SetValue(str(self.client.offset.total_seconds()))
 
         self.scroll = wx.lib.scrolledpanel.ScrolledPanel(self, size=(300, 300))
         self.scroll.SetBackgroundColour("white")
@@ -140,25 +166,35 @@ class MyFrame(wx.Frame):
         self.scroll.Bind(wx.EVT_CHAR, self.OnChar)
 
         self.statusbar = self.CreateStatusBar()
-        self.client.callback = self.OnStatus
+        self.client.post_callback = lambda success: wx.CallAfter(self.OnStatus, success)
         self.Fit()
         self.Show(True)
+        self.Tick()
+        
+    def _display(self):
+        text = ''.join(item.text for item in self.client.entries())
+        self.output.SetLabel(text)
+        self.output.Wrap(self.GetSize().width)
+        self.scroll.FitInside()
+        self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
         
     def OnChar(self, e):
         c = e.GetUnicodeKey()
         if c == wx.WXK_RETURN:
-            self.output.SetLabel(self.output.GetLabel() + "\n")
-            self.client.send("\n")
+            self.client.text("\n")
         elif c == wx.WXK_BACK or c == wx.WXK_DELETE:
-            self.output.SetLabel(self.output.GetLabel()[:-1])
             self.client.delete(1)
         elif c != wx.WXK_NONE:
-            self.output.SetLabel(self.output.GetLabel() + chr(c))
-            self.client.send(chr(c))
+            self.client.text(chr(c))
+        self._display()
 
-        self.output.Wrap(self.GetSize().width)
-        self.scroll.FitInside()
-        self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
+    def Tick(self):
+        delay = self.client.tick()
+        self._display()
+        if delay > 0:
+            wx.CallLater(int(delay * 1000), self.Tick)
+        else:
+            wx.CallAfter(self.Tick)
 
     def OnURLChange(self, e):
         self.client.url = e.String.strip()
@@ -166,24 +202,56 @@ class MyFrame(wx.Frame):
     def OnDelayChange(self, e):
         try:
             self.client.delay = datetime.timedelta(seconds=int(e.String.strip()))
-            print(self.client.delay)
         except ValueError:
             pass
         
     def OnOffsetChange(self, e):
         try:
             self.client.offset = datetime.timedelta(seconds=int(e.String.strip()))
-            print(self.client.offset)
         except ValueError:
             pass
         
-    def OnStatus(self, success, text):
+    def OnStatus(self, success):
         if success:
             self.statusbar.SetStatusText("Connected")
         else:
             self.statusbar.SetStatusText("Disconnected")
 
-if __name__ == "__main__":
+def gui():
     app = wx.App(False)
     frame = MyFrame()
     app.MainLoop()
+
+def client_test():
+    c = Client()
+    c.url = 'http://localhost:8080/?foo'
+    def callback(success):
+        if success:
+            print("success")
+        else:
+            print("failed")
+    c.post_callback = callback
+    #c.url = "http://upload.youtube.com/closedcaption?itag=33&key=yt_qc&expire=1440296665&sparams=id%2Citag%2Cns%2Cexpire&signature=3CE301723686C033E58012110F9FE88BBF7CA679.BCD9169B4E6FD08795155F4827E01013FA13A9CC&ns=yt-ems-t&id=e3g9lbxmZ2SgGzG4KsjvDA1437704530287373"
+    s = """Lorem ipsum dolor sit amet, cum fastidii perfecto legendos et, eu vocent efficiantur est, in reque appareat lucilius quo. Cu nibh illum pri. Id vim vero consequat consetetur. Quod suscipit intellegam nam ex, mel modo mazim animal ex. Ad vim timeam quaestio, quo paulo quaeque equidem ei. Vel ne zril adolescens voluptatum, numquam atomorum his ei. Ferri volutpat sea id, ad fuisset adipiscing vix.
+
+    Sea porro intellegam ad, sint animal te mea, eum meis graeco apeirian ei. Choro veniam te usu. Eu fabulas torquatos usu. Dolorum sapientem eu eum, sed timeam suscipit no, detraxit pericula mei at. Cu soluta graeco usu. Id sit viderer appellantur, eos nemore timeam id.
+
+    Has utamur admodum splendide id, iuvaret utroque meliore duo ad. Et quo nihil vitae volumus. Ut eum ludus vulputate. Nobis quaestio ne vel. An quo tation tritani. Tollit periculis concludaturque in pri, sea no choro fastidii complectitur.
+
+    Mucius bonorum vis ad, usu ei oporteat repudiare. Eum ex nonumy doctus, quo omnis deleniti eu, ea qui recusabo quaerendum necessitatibus. Id qui wisi philosophia, assum eripuit vis at, usu cu adipisci invenire voluptatibus. Ex probo noster equidem eum, cu ferri possim per, id natum liberavisse vis. An nam graeco timeam deserunt.
+
+    Ea probo assum inimicus sea, omnes admodum ius at. No eripuit labores propriae sed, consul civibus ea mei, nemore officiis ad sea. Sed minim equidem vituperatoribus no. Omnium virtute elaboraret vel ei."""
+    words = iter(s.split())
+    try:
+        while True:
+            while random.choice([True, False]):
+                c.text(next(words) + " ")
+            while random.choice([True, False]):
+                c.delete(1)
+            time.sleep(c.tick())
+    except StopIteration:
+        pass
+        
+
+if __name__ == "__main__":
+    gui()
