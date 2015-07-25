@@ -1,21 +1,24 @@
+import collections
 import datetime
 import http.client
-import queue
 import io
-import requests
-import time
+import queue
 import random
+import requests
 import threading
-import collections
+import time
+import wx
+import wx.lib.scrolledpanel
 
 class Client:
     def __init__(self):
         self._queue = queue.Queue()
         self._delayed = queue.Queue()
         self.url = ''
-        self.delay = datetime.timedelta(seconds=1)
+        self.delay = datetime.timedelta(seconds=5)
         self.offset = datetime.timedelta()
         self.callback = None
+        self.heartbeat_interval_seconds = 5
         self._correction = datetime.timedelta()
         threading.Thread(target=self._delayer, daemon=True).start()
         threading.Thread(target=self._poster, daemon=True).start()
@@ -61,7 +64,10 @@ class Client:
         seq = 1
         correction = datetime.timedelta()
         while True:
-            item = self._delayed.get()
+            try:
+                item = self._delayed.get(timeout=self.heartbeat_interval_seconds)
+            except queue.Empty:
+                item = [datetime.datetime.utcnow(), '', 0]
             items = [item]
             try:
                 for i in range(100):
@@ -71,7 +77,7 @@ class Client:
             buf = io.StringIO(newline="\r\n")
             offset = self.offset
             for item in items:
-                print((item[0] + offset + correction).isoformat()[:-3], item[1], sep="\n", end="\n", file=buf, flush=True)
+                print((item[0] + offset + correction).isoformat()[:-3], item[1].replace("\n", "<br>"), sep="\n", end="\n", file=buf, flush=True)
             data = buf.getvalue()
             backoff = 0.1
             start = time.time()
@@ -92,27 +98,92 @@ class Client:
                 self.callback(success, ''.join([item[1] for item in items]))
             seq += 1
 
-c = Client()
-c.url = 'http://localhost:8080/?foo'
-def callback(success, message):
-    if success:
-        print("success:", message)
-    else:
-        print("failed:", message)
-c.callback = callback
-#c.url = "http://upload.youtube.com/closedcaption?itag=33&key=yt_qc&expire=1440296665&sparams=id%2Citag%2Cns%2Cexpire&signature=3CE301723686C033E58012110F9FE88BBF7CA679.BCD9169B4E6FD08795155F4827E01013FA13A9CC&ns=yt-ems-t&id=e3g9lbxmZ2SgGzG4KsjvDA1437704530287373"
-s = """Lorem ipsum dolor sit amet, cum fastidii perfecto legendos et, eu vocent efficiantur est, in reque appareat lucilius quo. Cu nibh illum pri. Id vim vero consequat consetetur. Quod suscipit intellegam nam ex, mel modo mazim animal ex. Ad vim timeam quaestio, quo paulo quaeque equidem ei. Vel ne zril adolescens voluptatum, numquam atomorum his ei. Ferri volutpat sea id, ad fuisset adipiscing vix.
+class MyFrame(wx.Frame):
+    def __init__(self, parent=None):
+        super().__init__(parent, title="Plover Captions for YouTube Live")
 
-Sea porro intellegam ad, sint animal te mea, eum meis graeco apeirian ei. Choro veniam te usu. Eu fabulas torquatos usu. Dolorum sapientem eu eum, sed timeam suscipit no, detraxit pericula mei at. Cu soluta graeco usu. Id sit viderer appellantur, eos nemore timeam id.
+        self.client = Client()
 
-Has utamur admodum splendide id, iuvaret utroque meliore duo ad. Et quo nihil vitae volumus. Ut eum ludus vulputate. Nobis quaestio ne vel. An quo tation tritani. Tollit periculis concludaturque in pri, sea no choro fastidii complectitur.
+        vbox = wx.BoxSizer(wx.VERTICAL)
+        self.SetSizer(vbox)
+        
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+        vbox.Add(hbox, flag=wx.ALL, border=3)
+        
+        hbox.Add(wx.StaticText(self, label="URL: "), flag=wx.ALL, border=3)
+        url = wx.TextCtrl(self)
+        hbox.Add(url, border=3, flag=wx.ALL)
+        url.Bind(wx.EVT_TEXT, self.OnURLChange)
+        
+        hbox.Add(wx.StaticText(self, label="Delay: "), flag = wx.ALL, border=3)
+        delay = wx.TextCtrl(self)
+        hbox.Add(delay, border=3, flag=wx.ALL)
+        delay.Bind(wx.EVT_TEXT, self.OnDelayChange)
+        delay.SetValue('5')
 
-Mucius bonorum vis ad, usu ei oporteat repudiare. Eum ex nonumy doctus, quo omnis deleniti eu, ea qui recusabo quaerendum necessitatibus. Id qui wisi philosophia, assum eripuit vis at, usu cu adipisci invenire voluptatibus. Ex probo noster equidem eum, cu ferri possim per, id natum liberavisse vis. An nam graeco timeam deserunt.
+        hbox.Add(wx.StaticText(self, label="Offset: "), flag = wx.ALL, border=3)
+        offset = wx.TextCtrl(self)
+        hbox.Add(offset, border=3, flag=wx.ALL)
+        delay.Bind(wx.EVT_TEXT, self.OnOffsetChange)
+        offset.SetValue('0')
 
-Ea probo assum inimicus sea, omnes admodum ius at. No eripuit labores propriae sed, consul civibus ea mei, nemore officiis ad sea. Sed minim equidem vituperatoribus no. Omnium virtute elaboraret vel ei."""
-words = s.split()
-for word in words:
-    time.sleep(0.5)
-    c.send(word + " ")
-    time.sleep(0.1)
-    c.delete(random.randint(0, 3))
+        self.scroll = wx.lib.scrolledpanel.ScrolledPanel(self, size=(300, 300))
+        self.scroll.SetBackgroundColour("white")
+        vbox.Add(self.scroll, proportion=1, flag = wx.EXPAND | wx.ALL, border=3)
+        scrollvbox = wx.BoxSizer(wx.VERTICAL)
+        self.output = wx.StaticText(self.scroll)
+        self.output.SetBackgroundColour("white")
+        scrollvbox.Add(self.output, flag=wx.EXPAND)
+        self.scroll.SetSizer(scrollvbox)
+        self.scroll.SetAutoLayout(True)
+        self.scroll.SetupScrolling(scroll_x=False)
+        self.scroll.Bind(wx.EVT_CHAR, self.OnChar)
+
+        self.statusbar = self.CreateStatusBar()
+        self.client.callback = self.OnStatus
+        self.Fit()
+        self.Show(True)
+        
+    def OnChar(self, e):
+        c = e.GetUnicodeKey()
+        if c == wx.WXK_RETURN:
+            self.output.SetLabel(self.output.GetLabel() + "\n")
+            self.client.send("\n")
+        elif c == wx.WXK_BACK or c == wx.WXK_DELETE:
+            self.output.SetLabel(self.output.GetLabel()[:-1])
+            self.client.delete(1)
+        elif c != wx.WXK_NONE:
+            self.output.SetLabel(self.output.GetLabel() + chr(c))
+            self.client.send(chr(c))
+
+        self.output.Wrap(self.GetSize().width)
+        self.scroll.FitInside()
+        self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
+
+    def OnURLChange(self, e):
+        self.client.url = e.String.strip()
+        
+    def OnDelayChange(self, e):
+        try:
+            self.client.delay = datetime.timedelta(seconds=int(e.String.strip()))
+            print(self.client.delay)
+        except ValueError:
+            pass
+        
+    def OnOffsetChange(self, e):
+        try:
+            self.client.offset = datetime.timedelta(seconds=int(e.String.strip()))
+            print(self.client.offset)
+        except ValueError:
+            pass
+        
+    def OnStatus(self, success, text):
+        if success:
+            self.statusbar.SetStatusText("Connected")
+        else:
+            self.statusbar.SetStatusText("Disconnected")
+
+if __name__ == "__main__":
+    app = wx.App(False)
+    frame = MyFrame()
+    app.MainLoop()
