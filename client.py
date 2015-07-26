@@ -10,7 +10,6 @@ import threading
 import time
 import wx
 import wx.lib.scrolledpanel
-import wx.lib.fancytext
 
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
