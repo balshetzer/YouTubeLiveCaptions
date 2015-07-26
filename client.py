@@ -166,6 +166,7 @@ class MyFrame(wx.Frame):
         self.scroll.Bind(wx.EVT_CHAR, self.OnChar)
 
         self.statusbar = self.CreateStatusBar()
+        self.statusbar.SetStatusText("Disconnected")
         self.client.post_callback = lambda success: wx.CallAfter(self.OnStatus, success)
         self.Fit()
         self.Show(True)
