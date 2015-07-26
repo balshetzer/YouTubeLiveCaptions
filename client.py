@@ -10,6 +10,7 @@ import threading
 import time
 import wx
 import wx.lib.scrolledpanel
+import wx.lib.fancytext
 
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
@@ -78,14 +79,14 @@ class Client:
             self._sent.clear()
             return 0 if self._pending else self._poll_interval
         else:
-            if now - self._retry_start >= self._retry_timeout:
+            if datetime.datetime.utcnow() - self._retry_start >= self._retry_timeout:
                 for item in self._sent:
                     item.status = TextEntry.FAILED
                 self._confirmed.extend(self._sent)
                 self._sent.clear()
                 return 0 if self._pending else self._poll_interval
             self._retry_delay *= 2
-            return random.unifrom(0, self._retry_delay)
+            return random.uniform(0, self._retry_delay)
 
     def tick(self):
         """Runs background activities. Returns the delay, in seconds, until the next call to tick."""
