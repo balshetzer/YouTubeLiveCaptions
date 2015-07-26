@@ -11,6 +11,12 @@ import time
 import wx
 import wx.lib.scrolledpanel
 
+# TODO: Create compiled app for windows
+# TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
+# TODO: Color text based on whether it gets sent successfully or not
+# TODO: option to pull data from plover's log?
+# TODO: save text to file?
+
 class TextEntry:
     PENDING = 0
     SENT = 1
