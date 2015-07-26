@@ -10,12 +10,14 @@ import threading
 import time
 import wx
 import wx.lib.scrolledpanel
+import wx.lib.wordwrap
 
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
 # TODO: Color text based on whether it gets sent successfully or not
 # TODO: option to pull data from plover's log?
 # TODO: save text to file?
+# TODO handle size change on frame to re-layout text
 
 class TextEntry:
     PENDING = 0
@@ -68,7 +70,10 @@ class Client:
                 self._pending.pop()
 
     def entries(self):
-        return itertools.chain(self._confirmed, self._sent, self._pending)
+        r = list(self._confirmed)
+        r.extend(self._sent)
+        r.extend(self._pending)
+        return r
 
     def _retry(self):
         if self._post(self._seq, self._sent):
@@ -102,6 +107,8 @@ class Client:
             if item.text:
                 self._sent.append(item)
         if self._sent:
+            for item in self._sent:
+                item.status = TextEntry.SENT
             return self._retry()
         if now - self._last_post >= self._heartbeat_interval:
             self._post(self._seq, [TextEntry()])
@@ -125,9 +132,295 @@ class Client:
         self.post_callback(success)
         return success
 
+BUFFERED = 0   # In unbuffered mode we can let the theme shine through,
+               # otherwise we draw the background ourselves.
 
-def format_sent_text(items):
-    return ''.join(['<span color="{color}>{text}</span>'.format({color: 'green' if item[0] else 'red', text: item[1].replace("&", "&amp;").replace("'", "&apos;").replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')}) for item in items])
+if wx.Platform == "__WXMAC__":
+    try:
+        from Carbon.Appearance import kThemeBrushDialogBackgroundActive
+    except ImportError:
+        kThemeBrushDialogBackgroundActive = 1
+        
+#----------------------------------------------------------------------
+
+class ColoredStaticText(wx.Control):
+    """ :class:`ColoredStaticText` allows text to be colored. """
+    labelDelta = 1
+
+    def __init__(self, parent, ID=-1, label="",
+                 pos=wx.DefaultPosition, size=wx.DefaultSize,
+                 style=0,
+                 name="genstattext"):
+        """
+        Default class constructor.
+
+        :param `parent`: parent window, must not be ``None``;
+        :param integer `ID`: window identifier. A value of -1 indicates a default value;
+        :param string `label`: the static text label (i.e., its text label);
+        :param `pos`: the control position. A value of (-1, -1) indicates a default position,
+         chosen by either the windowing system or wxPython, depending on platform;
+        :param `size`: the control size. A value of (-1, -1) indicates a default size,
+         chosen by either the windowing system or wxPython, depending on platform;
+        :param integer `style`: the underlying :class:`Control` style;
+        :param string `name`: the widget name.
+
+        :type parent: :class:`Window`
+        :type pos: tuple or :class:`Point`
+        :type size: tuple or :class:`Size`
+        """
+
+        wx.Control.__init__(self, parent, ID, pos, size, style|wx.NO_BORDER,
+                             wx.DefaultValidator, name)
+
+        wx.Control.SetLabel(self, label) # don't check wx.ST_NO_AUTORESIZE yet
+        self.InheritAttributes()
+        self.SetInitialSize(size)
+
+        self.Bind(wx.EVT_PAINT, self.OnPaint)
+        if BUFFERED:
+            self.defBackClr = self.GetBackgroundColour()
+            self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
+        else:
+            self.SetBackgroundStyle(wx.BG_STYLE_SYSTEM)
+        self.colors = [("black", 0)]
+
+    def SetLabelAndColors(self, label, colors):
+        self.Freeze()
+        self.SetLabel(label)
+        self.SetColors(colors)
+        self.Thaw()
+
+    def SetColors(self, colors):
+        if len(colors) == 0:
+            self.colors = [("black", 0)]
+        elif colors[0][1] != 0:
+            self.colors = [("black", 0)] + colors
+        else:
+            self.colors = colors
+        self.colors.sort(key=lambda x: x[1])
+        self.Refresh()
+
+    def SetLabel(self, label):
+        """
+        Sets the static text label and updates the control's size to exactly
+        fit the label unless the control has wx.ST_NO_AUTORESIZE flag.
+
+        :param string `label`: the static text label (i.e., its text label).
+        """
+        
+        wx.Control.SetLabel(self, label)
+        style = self.GetWindowStyleFlag()
+        self.InvalidateBestSize()
+        if not style & wx.ST_NO_AUTORESIZE:
+            self.SetSize(self.GetBestSize())
+        self.Refresh()
+
+
+    def SetFont(self, font):
+        """
+        Sets the static text font and updates the control's size to exactly
+        fit the label unless the control has wx.ST_NO_AUTORESIZE flag.
+
+        :param Font `font`: a valid font instance, which will be the new font used
+         to display the text.
+        """
+        
+        wx.Control.SetFont(self, font)
+        style = self.GetWindowStyleFlag()
+        self.InvalidateBestSize()
+        if not style & wx.ST_NO_AUTORESIZE:
+            self.SetSize(self.GetBestSize())
+        self.Refresh()
+
+
+    def DoGetBestSize(self):
+        """
+        Overridden base class virtual.  Determines the best size of
+        the control based on the label size and the current font.
+
+        .. note:: Overridden from :class:`Control`.
+        """
+        
+        label = self.GetLabel()
+        font = self.GetFont()
+        if not font:
+            font = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT)
+        dc = wx.ClientDC(self)
+        dc.SetFont(font)
+        
+        maxWidth = totalHeight = 0
+        for line in label.split('\n'):
+            if line == '':
+                w, h = dc.GetTextExtent('W')  # empty lines have height too
+            else:
+                w, h = dc.GetTextExtent(line)
+            totalHeight += h
+            maxWidth = max(maxWidth, w)
+        best = wx.Size(maxWidth, totalHeight)
+        self.CacheBestSize(best)
+        return best
+
+
+    def Enable(self, enable=True):
+        """
+        Enable or disable the widget for user input. 
+
+        :param bool `enable`: If ``True``, enables the window for input. If ``False``, disables the window.
+
+        :returns: ``True`` if the window has been enabled or disabled, ``False`` if nothing was
+         done, i.e. if the window had already been in the specified state.
+
+        .. note:: Note that when a parent window is disabled, all of its children are disabled as
+           well and they are reenabled again when the parent is.
+
+        .. note:: Overridden from :class:`Control`.
+        """
+
+        retVal = wx.Control.Enable(self, enable)
+        self.Refresh()
+
+        return retVal
+    
+
+    def Disable(self):
+        """
+        Disables the control.
+
+        :returns: ``True`` if the window has been disabled, ``False`` if it had been
+         already disabled before the call to this function.
+         
+        .. note:: This is functionally equivalent of calling :meth:`~Control.Enable` with a ``False`` flag.
+
+        .. note:: Overridden from :class:`Control`.
+        """
+
+        retVal = wx.Control.Disable(self)
+        self.Refresh()
+
+        return retVal
+
+
+    def AcceptsFocus(self):
+        """
+        Can this window be given focus by mouse click?
+
+        .. note:: Overridden from :class:`Control`.
+        """
+
+        return False
+
+
+    def GetDefaultAttributes(self):
+        """
+        Overridden base class virtual.  By default we should use
+        the same font/colour attributes as the native :class:`StaticText`.
+
+        .. note:: Overridden from :class:`Control`.
+        """
+        
+        return wx.StaticText.GetClassDefaultAttributes()
+
+
+    def ShouldInheritColours(self):
+        """
+        Overridden base class virtual.  If the parent has non-default
+        colours then we want this control to inherit them.
+
+        .. note:: Overridden from :class:`Control`.
+        """
+
+        return True
+
+    
+    def OnPaint(self, event):
+        """
+        Handles the ``wx.EVT_PAINT``.
+
+        :param `event`: a :class:`PaintEvent` event to be processed.
+        """
+        
+        if BUFFERED:
+            dc = wx.BufferedPaintDC(self)
+        else:
+            dc = wx.PaintDC(self)
+        width, height = self.GetClientSize()
+        if not width or not height:
+            return
+
+        if BUFFERED:
+            clr = self.GetBackgroundColour()
+            if wx.Platform == "__WXMAC__" and clr == self.defBackClr:
+                # if colour is still the default then use the theme's  background on Mac
+                themeColour = wx.MacThemeColour(kThemeBrushDialogBackgroundActive)
+                backBrush = wx.Brush(themeColour)
+            else:
+                backBrush = wx.Brush(clr, wx.BRUSHSTYLE_SOLID)
+            dc.SetBackground(backBrush)
+            dc.Clear()
+
+        if self.IsEnabled():
+            dc.SetTextForeground(self.GetForegroundColour())
+        else:
+            dc.SetTextForeground(wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT))
+            
+        dc.SetFont(self.GetFont())
+        label = self.GetLabel()
+        style = self.GetWindowStyleFlag()
+        x = y = 0
+        pieces = []
+        colorindex = 0
+        textindex = 0
+        for line in label.split('\n'):
+            if not line:
+                w, h = self.GetTextExtent('W') # empty lines have height too
+                y += h
+                textindex += 1
+            else:
+                w, h = self.GetTextExtent(line)
+                if style & wx.ALIGN_RIGHT:
+                    x = width - w
+                if style & wx.ALIGN_CENTER:
+                    x = (width - w)/2
+                while line:
+                    nextcolorindex = colorindex
+                    end = len(line)
+                    if colorindex + 1 < len(self.colors) and textindex + len(line) > self.colors[colorindex+1][1]:
+                        end = self.colors[colorindex+1][1] - textindex
+                        nextcolorindex = colorindex + 1
+                    piece = line[:end]
+                    line = line[end:]
+                    pieces.append((x, y, self.colors[colorindex][0], piece))
+                    w, _ = self.GetTextExtent(piece)
+                    x += w
+                    textindex += len(piece)
+                    colorindex = nextcolorindex
+                y += h
+                x = 0
+                textindex += 1
+        for piece in pieces:
+            dc.SetTextForeground(piece[2])
+            dc.DrawText(piece[3], piece[0], piece[1])
+
+    def OnEraseBackground(self, event):
+        """
+        Handles the ``wx.EVT_ERASE_BACKGROUND`` event.
+
+        :param `event`: a :class:`EraseEvent` event to be processed.
+
+        .. note:: This is intentionally empty to reduce flicker.
+        """
+
+        pass
+        
+    def Wrap(self, width):
+        label = self.GetLabel()
+        font = self.GetFont()
+        if not font:
+            font = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT)
+        dc = wx.ClientDC(self)
+        dc.SetFont(font)
+        label = wx.lib.wordwrap.wordwrap(label, width, dc)
+        self.SetLabel(label)
 
 class MyFrame(wx.Frame):
     def __init__(self, parent=None):
@@ -163,8 +456,10 @@ class MyFrame(wx.Frame):
         self.scroll.SetBackgroundColour("white")
         vbox.Add(self.scroll, proportion=1, flag = wx.EXPAND | wx.ALL, border=3)
         scrollvbox = wx.BoxSizer(wx.VERTICAL)
-        self.output = wx.StaticText(self.scroll)
+        #self.output = wx.StaticText(self.scroll)
+        self.output = ColoredStaticText(self.scroll)
         self.output.SetBackgroundColour("white")
+        self.output.SetForegroundColour("black")
         scrollvbox.Add(self.output, flag=wx.EXPAND)
         self.scroll.SetSizer(scrollvbox)
         self.scroll.SetAutoLayout(True)
@@ -179,13 +474,23 @@ class MyFrame(wx.Frame):
         self.Tick()
         
     def _display(self):
-        text = ''.join(item.text for item in self.client.entries())
-        self.output.SetLabel(text)
-        self.output.Wrap(self.GetSize().width)
+        colormap = {TextEntry.PENDING: "black", TextEntry.SENT: "gray", TextEntry.SUCCESS: "green", TextEntry.FAILED: "red"}
+        textlength = 0
+        colors = []
+        entries = self.client.entries()
+        for item in entries:
+            colors.append((colormap[item.status], textlength))
+            textlength += len(item.text)
+        text = ''.join(item.text for item in entries)
+        print(text)
+        print(colors)
+        self.output.SetLabelAndColors(text, colors)
+        self.output.Wrap(self.scroll.GetSize().width)
         self.scroll.FitInside()
         self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
         
     def OnChar(self, e):
+        print("event")
         c = e.GetUnicodeKey()
         if c == wx.WXK_RETURN:
             self.client.text("\n")
