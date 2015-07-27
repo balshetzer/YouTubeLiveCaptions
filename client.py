@@ -16,7 +16,6 @@ import wx.lib.wordwrap
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
 # TODO: option to pull data from plover's log?
 # TODO: save text to file?
-# TODO handle size change on frame to re-layout text
 
 class TextEntry:
     PENDING = 0
@@ -466,6 +465,7 @@ class MyFrame(wx.Frame):
         self.client.post_callback = lambda success: wx.CallAfter(self.OnStatus, success)
         self.Fit()
         self.Bind(wx.EVT_ACTIVATE, lambda x: self.output.SetFocus())
+        self.Bind(wx.EVT_SIZE, lambda x: (x.Skip(), self._display()))
         self.Show(True)
         self.Tick()
         
