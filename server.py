@@ -1,12 +1,13 @@
 import http.server
 import datetime
+import random
 
 class handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         print(self.headers, end='')
         print(self.rfile.read(int(self.headers.get('Content-Length'))).decode('UTF-8'))
         date = (datetime.datetime.utcnow().isoformat()[:-3] + '\r\n').encode('UTF-8')
-        self.send_response(200)
+        self.send_response(random.choice([200, 500]))
         self.end_headers()
         self.wfile.write(date)
         return
