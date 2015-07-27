@@ -14,10 +14,10 @@ import wx.lib.wordwrap
 
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
-# TODO: Color text based on whether it gets sent successfully or not
 # TODO: option to pull data from plover's log?
 # TODO: save text to file?
 # TODO handle size change on frame to re-layout text
+# TODO: OnFocus, give focus to the label or scroll.
 
 class TextEntry:
     PENDING = 0
@@ -29,6 +29,9 @@ class TextEntry:
         self.time = datetime.datetime.utcnow()
         self.text = text
         self.status = TextEntry.PENDING
+        
+    def __repr__(self):
+        return "TextEntry({time}, {text}, {status})".format(time=self.time,text=self.text,status=self.status)
 
 class Client:
     def __init__(self):
@@ -77,44 +80,54 @@ class Client:
 
     def _retry(self):
         if self._post(self._seq, self._sent):
+            print("successfully posted:", self._sent)
             for item in self._sent:
                 item.status = TextEntry.SUCCESS
             self._confirmed.extend(self._sent)
             self._sent.clear()
             return 0 if self._pending else self._poll_interval
         else:
+            print("failed to posted:", self._sent)
             if datetime.datetime.utcnow() - self._retry_start >= self._retry_timeout:
+                print("giving up on", self._sent)
                 for item in self._sent:
                     item.status = TextEntry.FAILED
                 self._confirmed.extend(self._sent)
                 self._sent.clear()
                 return 0 if self._pending else self._poll_interval
+            print("delaying on:", self._sent)
             self._retry_delay *= 2
             return random.uniform(0, self._retry_delay)
 
     def tick(self):
         """Runs background activities. Returns the delay, in seconds, until the next call to tick."""
         now = datetime.datetime.utcnow()
+        print("tick:", now)
         if self._sent:
+            print("retry:", self._sent)
             return self._retry()
         
-        self._seq += 1
-        self._retry_start = datetime.datetime.utcnow()
-        self._retry_delay = 0.1
-        
+        print ("pending:", self._pending)
         while self._pending and now - self._pending[0].time >= self.delay:
             item = self._pending.popleft()
             if item.text:
                 self._sent.append(item)
         if self._sent:
+            self._seq += 1
+            self._retry_start = datetime.datetime.utcnow()
+            self._retry_delay = 0.1
+            print("first attempt:", self._sent)
             for item in self._sent:
                 item.status = TextEntry.SENT
             return self._retry()
         if now - self._last_post >= self._heartbeat_interval:
+            self._seq += 1
+            print("sending heartbeat")
             self._post(self._seq, [TextEntry()])
         return self._poll_interval
 
     def _post(self, seq, items):
+        print("posting:", seq, items)
         headers = {'content-type': 'text/plain'}
         buf = io.StringIO(newline="\n")
         offset = self.offset
@@ -141,8 +154,15 @@ if wx.Platform == "__WXMAC__":
     except ImportError:
         kThemeBrushDialogBackgroundActive = 1
         
-#----------------------------------------------------------------------
-
+class ColoredText:
+    def __init__(self, text, color, bgcolor):
+        self.text = text
+        self.color = color
+        self.bgcolor = bgcolor
+        
+    def __repr__(self):
+        return "ColoredText({text}, {color}, {bgcolor})".format(text=self.text, color=self.color, bgcolor=self.bgcolor)
+        
 class ColoredStaticText(wx.Control):
     """ :class:`ColoredStaticText` allows text to be colored. """
     labelDelta = 1
@@ -172,6 +192,7 @@ class ColoredStaticText(wx.Control):
         wx.Control.__init__(self, parent, ID, pos, size, style|wx.NO_BORDER,
                              wx.DefaultValidator, name)
 
+        self.label = [ColoredText(label, "black", "white")]
         wx.Control.SetLabel(self, label) # don't check wx.ST_NO_AUTORESIZE yet
         self.InheritAttributes()
         self.SetInitialSize(size)
@@ -182,39 +203,18 @@ class ColoredStaticText(wx.Control):
             self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
         else:
             self.SetBackgroundStyle(wx.BG_STYLE_SYSTEM)
-        self.colors = [("black", 0)]
-
-    def SetLabelAndColors(self, label, colors):
-        self.Freeze()
-        self.SetLabel(label)
-        self.SetColors(colors)
-        self.Thaw()
-
-    def SetColors(self, colors):
-        if len(colors) == 0:
-            self.colors = [("black", 0)]
-        elif colors[0][1] != 0:
-            self.colors = [("black", 0)] + colors
-        else:
-            self.colors = colors
-        self.colors.sort(key=lambda x: x[1])
-        self.Refresh()
 
     def SetLabel(self, label):
         """
-        Sets the static text label and updates the control's size to exactly
-        fit the label unless the control has wx.ST_NO_AUTORESIZE flag.
-
-        :param string `label`: the static text label (i.e., its text label).
+        label is a sequence of pairs of color and string.
         """
-        
-        wx.Control.SetLabel(self, label)
+        self.label = label
+        wx.Control.SetLabel(self, ''.join(item.text for item in label))
         style = self.GetWindowStyleFlag()
         self.InvalidateBestSize()
         if not style & wx.ST_NO_AUTORESIZE:
             self.SetSize(self.GetBestSize())
         self.Refresh()
-
 
     def SetFont(self, font):
         """
@@ -307,7 +307,7 @@ class ColoredStaticText(wx.Control):
         .. note:: Overridden from :class:`Control`.
         """
 
-        return False
+        return True
 
 
     def GetDefaultAttributes(self):
@@ -346,60 +346,43 @@ class ColoredStaticText(wx.Control):
         width, height = self.GetClientSize()
         if not width or not height:
             return
-
-        if BUFFERED:
-            clr = self.GetBackgroundColour()
-            if wx.Platform == "__WXMAC__" and clr == self.defBackClr:
-                # if colour is still the default then use the theme's  background on Mac
-                themeColour = wx.MacThemeColour(kThemeBrushDialogBackgroundActive)
-                backBrush = wx.Brush(themeColour)
-            else:
-                backBrush = wx.Brush(clr, wx.BRUSHSTYLE_SOLID)
-            dc.SetBackground(backBrush)
-            dc.Clear()
-
-        if self.IsEnabled():
-            dc.SetTextForeground(self.GetForegroundColour())
-        else:
-            dc.SetTextForeground(wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT))
             
         dc.SetFont(self.GetFont())
-        label = self.GetLabel()
+        dc.SetBackgroundMode(wx.SOLID)
         style = self.GetWindowStyleFlag()
         x = y = 0
-        pieces = []
-        colorindex = 0
-        textindex = 0
-        for line in label.split('\n'):
-            if not line:
-                w, h = self.GetTextExtent('W') # empty lines have height too
-                y += h
-                textindex += 1
+        lines = []
+        line = []
+        for part in self.label:
+            text = part.text
+            while text:
+                before, sep, text = text.partition('\n')
+                line.append(ColoredText(before, part.color, part.bgcolor))
+                if sep:
+                    lines.append(line)
+                    line = []
+        if line:
+            lines.append(line)
+        y = 0
+        _, emptylineheight = self.GetTextExtent('W')
+        for line in lines:
+            x = 0
+            text = ''.join(item.text for item in line)
+            if not text:
+                y += emptylineheight
             else:
-                w, h = self.GetTextExtent(line)
+                linewidth, lineheight = self.GetTextExtent(text)
                 if style & wx.ALIGN_RIGHT:
-                    x = width - w
-                if style & wx.ALIGN_CENTER:
-                    x = (width - w)/2
-                while line:
-                    nextcolorindex = colorindex
-                    end = len(line)
-                    if colorindex + 1 < len(self.colors) and textindex + len(line) > self.colors[colorindex+1][1]:
-                        end = self.colors[colorindex+1][1] - textindex
-                        nextcolorindex = colorindex + 1
-                    piece = line[:end]
-                    line = line[end:]
-                    pieces.append((x, y, self.colors[colorindex][0], piece))
-                    w, _ = self.GetTextExtent(piece)
+                    x = width - linewidth
+                elif style & wx.ALIGN_CENTER:
+                    x = (width - linewidth)/2
+                for item in line:
+                    dc.SetTextForeground(item.color)
+                    dc.SetTextBackground(item.bgcolor)
+                    dc.DrawText(item.text, x, y)
+                    w, _ = self.GetTextExtent(item.text)
                     x += w
-                    textindex += len(piece)
-                    colorindex = nextcolorindex
-                y += h
-                x = 0
-                textindex += 1
-        for piece in pieces:
-            dc.SetTextForeground(piece[2])
-            dc.DrawText(piece[3], piece[0], piece[1])
+                y += lineheight
 
     def OnEraseBackground(self, event):
         """
@@ -419,8 +402,21 @@ class ColoredStaticText(wx.Control):
             font = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT)
         dc = wx.ClientDC(self)
         dc.SetFont(font)
-        label = wx.lib.wordwrap.wordwrap(label, width, dc)
-        self.SetLabel(label)
+        newlabel = wx.lib.wordwrap.wordwrap(label, width, dc)
+        if label != newlabel:
+            currindex = 0
+            offset = 0
+            for c in newlabel:
+                if currindex >= len(self.label):
+                    break
+                curr = self.label[currindex]
+                if c != curr.text[offset]:
+                    curr.text = curr.text[:offset] + c + curr.text[offset:]
+                offset += 1
+                if offset >= len(curr.text):
+                    currindex += 1
+                    offset = 0
+        self.SetLabel(self.label)
 
 class MyFrame(wx.Frame):
     def __init__(self, parent=None):
@@ -456,15 +452,14 @@ class MyFrame(wx.Frame):
         self.scroll.SetBackgroundColour("white")
         vbox.Add(self.scroll, proportion=1, flag = wx.EXPAND | wx.ALL, border=3)
         scrollvbox = wx.BoxSizer(wx.VERTICAL)
-        #self.output = wx.StaticText(self.scroll)
         self.output = ColoredStaticText(self.scroll)
-        self.output.SetBackgroundColour("white")
-        self.output.SetForegroundColour("black")
+        self.output.Bind(wx.EVT_CHAR, self.OnChar)
+        self.scroll.Bind(wx.EVT_CHAR, self.OnChar)
+
         scrollvbox.Add(self.output, flag=wx.EXPAND)
         self.scroll.SetSizer(scrollvbox)
         self.scroll.SetAutoLayout(True)
         self.scroll.SetupScrolling(scroll_x=False)
-        self.scroll.Bind(wx.EVT_CHAR, self.OnChar)
 
         self.statusbar = self.CreateStatusBar()
         self.statusbar.SetStatusText("Disconnected")
@@ -474,17 +469,19 @@ class MyFrame(wx.Frame):
         self.Tick()
         
     def _display(self):
-        colormap = {TextEntry.PENDING: "black", TextEntry.SENT: "gray", TextEntry.SUCCESS: "green", TextEntry.FAILED: "red"}
-        textlength = 0
-        colors = []
-        entries = self.client.entries()
-        for item in entries:
-            colors.append((colormap[item.status], textlength))
-            textlength += len(item.text)
-        text = ''.join(item.text for item in entries)
-        print(text)
-        print(colors)
-        self.output.SetLabelAndColors(text, colors)
+        colormap = {TextEntry.PENDING: "white", TextEntry.SENT: "gray", TextEntry.SUCCESS: "green", TextEntry.FAILED: "red"}
+        label = [ColoredText(item.text, "black", colormap[item.status]) for item in self.client.entries()]
+        collapsed = []
+        for item in label:
+            if not collapsed:
+                collapsed.append(item)
+            elif collapsed[-1].color != item.color or collapsed[-1].bgcolor != item.bgcolor:
+                collapsed.append(item)
+            else:
+                collapsed[-1].text += item.text
+        label = collapsed
+        print("label:", label)
+        self.output.SetLabel(label)
         self.output.Wrap(self.scroll.GetSize().width)
         self.scroll.FitInside()
         self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
@@ -501,11 +498,16 @@ class MyFrame(wx.Frame):
         self._display()
 
     def Tick(self):
-        delay = self.client.tick()
+        delay = int(self.client.tick() * 1000)
+        print("delay:", delay)
         self._display()
         if delay > 0:
-            wx.CallLater(int(delay * 1000), self.Tick)
+            print("call later:", delay)
+            # It seems like this can be garbage collected, contrary to the docs.
+            # So we need to hold a reference to it until it runs.
+            self._tick = wx.CallLater(delay, self.Tick)
         else:
+            print("call after")
             wx.CallAfter(self.Tick)
 
     def OnURLChange(self, e):
