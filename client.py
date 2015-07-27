@@ -453,12 +453,13 @@ class MyFrame(wx.Frame):
         scrollvbox = wx.BoxSizer(wx.VERTICAL)
         self.output = ColoredStaticText(self.scroll)
         self.output.Bind(wx.EVT_CHAR, self.OnChar)
-        self.scroll.Bind(wx.EVT_CHAR, self.OnChar)
+        self.output.Bind(wx.EVT_SET_FOCUS, lambda x: self.scroll.Scroll(-1, self.scroll.GetClientSize().height))
 
         scrollvbox.Add(self.output, flag=wx.EXPAND)
         self.scroll.SetSizer(scrollvbox)
         self.scroll.SetAutoLayout(True)
         self.scroll.SetupScrolling(scroll_x=False)
+        self.scroll.Bind(wx.EVT_SET_FOCUS, lambda x: self.output.SetFocus())
 
         self.statusbar = self.CreateStatusBar()
         self.statusbar.SetStatusText("Disconnected")
@@ -469,7 +470,7 @@ class MyFrame(wx.Frame):
         self.Tick()
         
     def _display(self):
-        colormap = {TextEntry.PENDING: "white", TextEntry.SENT: "gray", TextEntry.SUCCESS: "green", TextEntry.FAILED: "red"}
+        colormap = {TextEntry.PENDING: "white", TextEntry.SENT: "light gray", TextEntry.SUCCESS: "green", TextEntry.FAILED: "red"}
         label = [ColoredText(item.text, "black", colormap[item.status]) for item in self.client.entries()]
         collapsed = []
         for item in label:
@@ -485,6 +486,8 @@ class MyFrame(wx.Frame):
         self.output.Wrap(self.scroll.GetSize().width)
         self.scroll.FitInside()
         self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
+        if not self.scroll.HasFocus() and not self.output.HasFocus():
+            print("no focus")
         
     def OnChar(self, e):
         print("event")
