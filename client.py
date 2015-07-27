@@ -17,7 +17,6 @@ import wx.lib.wordwrap
 # TODO: option to pull data from plover's log?
 # TODO: save text to file?
 # TODO handle size change on frame to re-layout text
-# TODO: OnFocus, give focus to the label or scroll.
 
 class TextEntry:
     PENDING = 0
@@ -465,6 +464,7 @@ class MyFrame(wx.Frame):
         self.statusbar.SetStatusText("Disconnected")
         self.client.post_callback = lambda success: wx.CallAfter(self.OnStatus, success)
         self.Fit()
+        self.Bind(wx.EVT_ACTIVATE, lambda x: self.output.SetFocus())
         self.Show(True)
         self.Tick()
         
