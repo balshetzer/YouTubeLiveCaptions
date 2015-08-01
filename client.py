@@ -145,12 +145,6 @@ class Client:
 
 BUFFERED = 0   # In unbuffered mode we can let the theme shine through,
                # otherwise we draw the background ourselves.
-
-if wx.Platform == "__WXMAC__":
-    try:
-        from Carbon.Appearance import kThemeBrushDialogBackgroundActive
-    except ImportError:
-        kThemeBrushDialogBackgroundActive = 1
         
 class ColoredText:
     def __init__(self, text, color, bgcolor):
