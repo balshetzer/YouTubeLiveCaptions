@@ -507,6 +507,8 @@ class MyFrame(wx.Frame):
             offset = len(toremove)
             newvalue = value[offset:]
             pos -= offset
+            if len(value) != endpos: # This means newlines are two chars.
+                pos -= toremove.count('\n')
             self.input.ChangeValue(newvalue)
             self.input.SetInsertionPoint(pos)
         
