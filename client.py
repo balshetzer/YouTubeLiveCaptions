@@ -14,6 +14,7 @@ import wx.lib.scrolledpanel
 import wx.lib.wordwrap
 
 # TODO: Drop old text for long documents.
+# TODO: handle shutdown without errors
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
 # TODO: option to pull data from plover's log?
@@ -508,8 +509,6 @@ class MyFrame(wx.Frame):
             toremove = ''.join(item.text for item in tosend)
             offset = len(toremove)
             newvalue = value[offset:]
-            if len(value) != endpos:
-                offset += toremove.find('\n')
             pos -= offset
             self.input.ChangeValue(newvalue)
             self.input.SetInsertionPoint(pos)
