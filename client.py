@@ -13,6 +13,7 @@ import wx
 import wx.lib.scrolledpanel
 import wx.lib.wordwrap
 
+# TODO: newlines cause cursor position issues
 # TODO: Drop old text for long documents.
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
@@ -465,7 +466,6 @@ class MyFrame(wx.Frame):
         self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
         
     def OnText(self, e):
-        print("value:", self.input.GetValue())
         text = self.input.GetValue()
         pending = self._pending
         self._pending = collections.deque()
@@ -490,14 +490,8 @@ class MyFrame(wx.Frame):
                 break
         if text:
             self._pending.append(TextEntry(text))
-        # Sanity check
-        a = self.input.GetValue()
-        b = ''.join(item.text for item in self._pending)
-        if a != b:
-            print("WTF!", a, b)
 
     def Tick(self):
-        print("Tick")
         now = datetime.datetime.utcnow()
         allowedlength = len(self.input.GetRange(0, self.input.GetInsertionPoint()))
         tosend = []
