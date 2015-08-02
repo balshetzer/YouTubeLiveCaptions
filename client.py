@@ -120,8 +120,6 @@ class Client:
         self._last_post = datetime.datetime.utcnow()
         self.post_callback(success)
         return success
-
-BUFFERED = 0
         
 class ColoredText:
     def __init__(self, text, color, bgcolor):
@@ -167,11 +165,9 @@ class ColoredStaticText(wx.Control):
         self.SetInitialSize(size)
 
         self.Bind(wx.EVT_PAINT, self.OnPaint)
-        if BUFFERED:
-            self.defBackClr = self.GetBackgroundColour()
-            self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
-        else:
-            self.SetBackgroundStyle(wx.BG_STYLE_SYSTEM)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self._bgpen = wx.ThePenList.FindOrCreatePen("white")
+        self._bgbrush = wx.TheBrushList.FindOrCreateBrush("white")
 
     def SetLabel(self, label):
         """
@@ -308,13 +304,14 @@ class ColoredStaticText(wx.Control):
         :param `event`: a :class:`PaintEvent` event to be processed.
         """
         
-        if BUFFERED:
-            dc = wx.BufferedPaintDC(self)
-        else:
-            dc = wx.PaintDC(self)
         width, height = self.GetClientSize()
         if not width or not height:
             return
+            
+        dc = wx.AutoBufferedPaintDC(self)
+        dc.SetPen(self._bgpen)
+        dc.SetBrush(self._bgbrush)
+        dc.DrawRectangle(0, 0, width, height)
             
         dc.SetFont(self.GetFont())
         dc.SetBackgroundMode(wx.SOLID)
