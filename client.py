@@ -3,6 +3,7 @@ import datetime
 import http.client
 import io
 import itertools
+import os.path
 import queue
 import random
 import requests
@@ -12,6 +13,7 @@ import wx
 import wx.lib.scrolledpanel
 import wx.lib.wordwrap
 
+# TODO: Drop old text for long documents.
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
 # TODO: option to pull data from plover's log?
@@ -52,23 +54,10 @@ class Client:
         # settings
         self.post_callback = lambda x: None
         self.url = ''
-        self.delay = datetime.timedelta(seconds=5)
         self.offset = datetime.timedelta()
         
-    def text(self, text):
-        "Queue text to be sent."
-        self._pending.append(TextEntry(text=text))
-        
-    def delete(self, spaces):
-        "Delete text if it hasn't already been sent."
-        while spaces and self._pending:
-            item = self._pending[-1]
-            count = min(spaces, len(item.text))
-            if count > 0:
-                item.text = item.text[:-count]
-                spaces -= count
-            if not item.text:
-                self._pending.pop()
+    def send(self, items):
+        self._pending.extend(items)
 
     def entries(self):
         r = list(self._confirmed)
@@ -78,54 +67,42 @@ class Client:
 
     def _retry(self):
         if self._post(self._seq, self._sent):
-            print("successfully posted:", self._sent)
             for item in self._sent:
                 item.status = TextEntry.SUCCESS
             self._confirmed.extend(self._sent)
             self._sent.clear()
             return 0 if self._pending else self._poll_interval
         else:
-            print("failed to posted:", self._sent)
             if datetime.datetime.utcnow() - self._retry_start >= self._retry_timeout:
-                print("giving up on", self._sent)
                 for item in self._sent:
                     item.status = TextEntry.FAILED
                 self._confirmed.extend(self._sent)
                 self._sent.clear()
                 return 0 if self._pending else self._poll_interval
-            print("delaying on:", self._sent)
             self._retry_delay *= 2
             return random.uniform(0, self._retry_delay)
 
     def tick(self):
         """Runs background activities. Returns the delay, in seconds, until the next call to tick."""
         now = datetime.datetime.utcnow()
-        print("tick:", now)
         if self._sent:
-            print("retry:", self._sent)
             return self._retry()
         
-        print ("pending:", self._pending)
-        while self._pending and now - self._pending[0].time >= self.delay:
-            item = self._pending.popleft()
-            if item.text:
-                self._sent.append(item)
+        self._sent.extend(self._pending)
+        self._pending.clear()
         if self._sent:
             self._seq += 1
             self._retry_start = datetime.datetime.utcnow()
             self._retry_delay = 0.1
-            print("first attempt:", self._sent)
             for item in self._sent:
                 item.status = TextEntry.SENT
             return self._retry()
         if now - self._last_post >= self._heartbeat_interval:
             self._seq += 1
-            print("sending heartbeat")
             self._post(self._seq, [TextEntry()])
         return self._poll_interval
 
     def _post(self, seq, items):
-        print("posting:", seq, items)
         headers = {'content-type': 'text/plain'}
         buf = io.StringIO(newline="\n")
         offset = self.offset
@@ -143,8 +120,7 @@ class Client:
         self.post_callback(success)
         return success
 
-BUFFERED = 0   # In unbuffered mode we can let the theme shine through,
-               # otherwise we draw the background ourselves.
+BUFFERED = 0
         
 class ColoredText:
     def __init__(self, text, color, bgcolor):
@@ -428,11 +404,12 @@ class MyFrame(wx.Frame):
         url.Bind(wx.EVT_TEXT, self.OnURLChange)
         url.SetValue(self.client.url)
         
+        self._delay = datetime.timedelta(seconds=5)
         hbox.Add(wx.StaticText(self, label="Delay: "), flag = wx.ALL, border=3)
         delay = wx.TextCtrl(self)
         hbox.Add(delay, border=3, flag=wx.ALL)
         delay.Bind(wx.EVT_TEXT, self.OnDelayChange)
-        delay.SetValue(str(self.client.delay.total_seconds()))
+        delay.SetValue(str(self._delay.total_seconds()))
 
         hbox.Add(wx.StaticText(self, label="Offset: "), flag = wx.ALL, border=3)
         offset = wx.TextCtrl(self)
@@ -442,23 +419,25 @@ class MyFrame(wx.Frame):
 
         self.scroll = wx.lib.scrolledpanel.ScrolledPanel(self, size=(300, 300))
         self.scroll.SetBackgroundColour("white")
-        vbox.Add(self.scroll, proportion=1, flag = wx.EXPAND | wx.ALL, border=3)
+        vbox.Add(self.scroll, proportion=3, flag = wx.EXPAND | wx.ALL, border=3)
         scrollvbox = wx.BoxSizer(wx.VERTICAL)
         self.output = ColoredStaticText(self.scroll)
-        self.output.Bind(wx.EVT_CHAR, self.OnChar)
-        self.output.Bind(wx.EVT_SET_FOCUS, lambda x: self.scroll.Scroll(-1, self.scroll.GetClientSize().height))
 
         scrollvbox.Add(self.output, flag=wx.EXPAND)
         self.scroll.SetSizer(scrollvbox)
         self.scroll.SetAutoLayout(True)
         self.scroll.SetupScrolling(scroll_x=False)
-        self.scroll.Bind(wx.EVT_SET_FOCUS, lambda x: self.output.SetFocus())
+
+        self._pending = collections.deque()
+        self.input = wx.TextCtrl(self, style=wx.TE_MULTILINE)
+        self.input.Bind(wx.EVT_TEXT, self.OnText)
+        vbox.Add(self.input, proportion=1, flag=wx.EXPAND | wx.ALL, border=3)
 
         self.statusbar = self.CreateStatusBar()
         self.statusbar.SetStatusText("Disconnected")
         self.client.post_callback = lambda success: wx.CallAfter(self.OnStatus, success)
         self.Fit()
-        self.Bind(wx.EVT_ACTIVATE, lambda x: self.output.SetFocus())
+        self.Bind(wx.EVT_ACTIVATE, lambda x: self.input.SetFocus())
         self.Bind(wx.EVT_SIZE, lambda x: (x.Skip(), self._display()))
         self.Show(True)
         self.Tick()
@@ -475,36 +454,73 @@ class MyFrame(wx.Frame):
             else:
                 collapsed[-1].text += item.text
         label = collapsed
-        print("label:", label)
         self.output.SetLabel(label)
         self.output.Wrap(self.scroll.GetSize().width)
         self.scroll.FitInside()
         self.scroll.Scroll(-1, self.scroll.GetClientSize().height)
-        if not self.scroll.HasFocus() and not self.output.HasFocus():
-            print("no focus")
         
-    def OnChar(self, e):
-        print("event")
-        c = e.GetUnicodeKey()
-        if c == wx.WXK_RETURN:
-            self.client.text("\n")
-        elif c == wx.WXK_BACK or c == wx.WXK_DELETE:
-            self.client.delete(1)
-        elif c != wx.WXK_NONE:
-            self.client.text(chr(c))
-        self._display()
+    def OnText(self, e):
+        print("value:", self.input.GetValue())
+        text = self.input.GetValue()
+        pending = self._pending
+        self._pending = collections.deque()
+        for item in pending:
+            piece = text[:len(item.text)]
+            text = text[len(item.text):]
+            if item.text == piece:
+                self._pending.append(item)
+            else:
+                common = os.path.commonprefix([item.text, piece])
+                if common:
+                    prefix = TextEntry()
+                    prefix.time = item.time
+                    prefix.text = common
+                    self._pending.append(prefix)
+                text = piece[len(common):] + text
+                if text:
+                    suffix = TextEntry()
+                    suffix.text = text
+                    self._pending.append(suffix)
+                    text = ''
+                break
+        if text:
+            self._pending.append(TextEntry(text))
+        # Sanity check
+        a = self.input.GetValue()
+        b = ''.join(item.text for item in self._pending)
+        if a != b:
+            print("WTF!", a, b)
 
     def Tick(self):
+        print("Tick")
+        now = datetime.datetime.utcnow()
+        allowedlength = len(self.input.GetRange(0, self.input.GetInsertionPoint()))
+        tosend = []
+        while self._pending and now - self._pending[0].time >= self._delay and len(self._pending[0].text) <= allowedlength:
+            item = self._pending.popleft()
+            tosend.append(item)
+            allowedlength -= len(item.text)
+        if tosend:
+            self.client.send(tosend)
+            pos = self.input.GetInsertionPoint()
+            value = self.input.GetValue()
+            endpos = self.input.GetLastPosition()
+            toremove = ''.join(item.text for item in tosend)
+            offset = len(toremove)
+            newvalue = value[offset:]
+            if len(value) != endpos:
+                offset += toremove.find('\n')
+            pos -= offset
+            self.input.ChangeValue(newvalue)
+            self.input.SetInsertionPoint(pos)
+        
         delay = int(self.client.tick() * 1000)
-        print("delay:", delay)
         self._display()
         if delay > 0:
-            print("call later:", delay)
             # It seems like this can be garbage collected, contrary to the docs.
             # So we need to hold a reference to it until it runs.
             self._tick = wx.CallLater(delay, self.Tick)
         else:
-            print("call after")
             wx.CallAfter(self.Tick)
 
     def OnURLChange(self, e):
@@ -512,7 +528,7 @@ class MyFrame(wx.Frame):
         
     def OnDelayChange(self, e):
         try:
-            self.client.delay = datetime.timedelta(seconds=int(e.String.strip()))
+            self._delay = datetime.timedelta(seconds=int(e.String.strip()))
         except ValueError:
             pass
         
