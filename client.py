@@ -14,7 +14,6 @@ import wx.lib.scrolledpanel
 import wx.lib.wordwrap
 
 # TODO: Drop old text for long documents.
-# TODO: handle shutdown without errors
 # TODO: Create compiled app for windows
 # TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
 # TODO: option to pull data from plover's log?
@@ -435,10 +434,18 @@ class MyFrame(wx.Frame):
         self.statusbar.SetStatusText("Disconnected")
         self.client.post_callback = lambda success: wx.CallAfter(self.OnStatus, success)
         self.Fit()
-        self.Bind(wx.EVT_ACTIVATE, lambda x: self.input.SetFocus())
+        self.Bind(wx.EVT_ACTIVATE, self.OnActivate)
         self.Bind(wx.EVT_SIZE, lambda x: (x.Skip(), self._display()))
         self.Show(True)
         self.Tick()
+
+    def OnActivate(self, e):
+        # This event gets sent after the input is deleted on app close
+        # so catch the exception and throw it away.
+        try:
+            self.input.SetFocus()
+        except:
+            pass
         
     def _display(self):
         colormap = {TextEntry.PENDING: "white", TextEntry.SENT: "light gray", TextEntry.SUCCESS: "green", TextEntry.FAILED: "red"}
