@@ -13,10 +13,8 @@ import wx
 import wx.lib.scrolledpanel
 import wx.lib.wordwrap
 
-# TODO: newlines cause cursor position issues
 # TODO: Drop old text for long documents.
 # TODO: Create compiled app for windows
-# TODO: Add an overlay message when the area is not in focus (make a key command to bring it into focus?)
 # TODO: option to pull data from plover's log?
 # TODO: save text to file?
 
