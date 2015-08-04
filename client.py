@@ -13,8 +13,7 @@ import wx
 import wx.lib.scrolledpanel
 import wx.lib.wordwrap
 
-# TODO: Drop old text for long documents.
-# TODO: Create compiled app for windows
+# TODO: Drop old text for long documents or maybe make the colored text more efficient so the whole thing isn't re-rendered all the time.
 # TODO: option to pull data from plover's log?
 # TODO: save text to file?
 
@@ -194,7 +193,6 @@ class ColoredStaticText(wx.Control):
         if not style & wx.ST_NO_AUTORESIZE:
             self.SetSize(self.GetBestSize())
         self.Refresh()
-
 
     def DoGetBestSize(self):
         """
